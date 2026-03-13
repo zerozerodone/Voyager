@@ -146,28 +146,22 @@ class ActionAgent:
             else:
                 observation += f"Chat log: None\n\n"
 
-        if screenshot:
-            observation += (
-                "(A screenshot of the bot's current view is attached. "
-                "Use it to understand the surroundings.)\n\n"
-            )
+        observation += f"Biome: {biome}\n\n"
+
+        observation += f"Time: {time_of_day}\n\n"
+
+        if voxels:
+            observation += f"Nearby blocks: {', '.join(voxels)}\n\n"
         else:
-            observation += f"Biome: {biome}\n\n"
+            observation += f"Nearby blocks: None\n\n"
 
-            observation += f"Time: {time_of_day}\n\n"
-
-            if voxels:
-                observation += f"Nearby blocks: {', '.join(voxels)}\n\n"
-            else:
-                observation += f"Nearby blocks: None\n\n"
-
-            if entities:
-                nearby_entities = [
-                    k for k, v in sorted(entities.items(), key=lambda x: x[1])
-                ]
-                observation += f"Nearby entities (nearest to farthest): {', '.join(nearby_entities)}\n\n"
-            else:
-                observation += f"Nearby entities (nearest to farthest): None\n\n"
+        if entities:
+            nearby_entities = [
+                k for k, v in sorted(entities.items(), key=lambda x: x[1])
+            ]
+            observation += f"Nearby entities (nearest to farthest): {', '.join(nearby_entities)}\n\n"
+        else:
+            observation += f"Nearby entities (nearest to farthest): None\n\n"
 
         observation += f"Health: {health:.1f}/20\n\n"
 
