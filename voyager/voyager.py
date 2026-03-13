@@ -4,6 +4,8 @@ import os
 import time
 from typing import Dict
 
+from langchain_core.messages import HumanMessage
+
 import voyager.utils as U
 from .env import VoyagerEnv
 
@@ -333,6 +335,18 @@ class Voyager:
             assert isinstance(parsed_result, str)
             self.recorder.record([], self.task)
             print(f"\033[34m{parsed_result} Trying again!\033[0m")
+            error_feedback = (
+                f"Your previous response could not be parsed.\n"
+                f"Error: {parsed_result}\n\n"
+                f"IMPORTANT: Your main async function must accept exactly one "
+                f"argument named 'bot' with no default parameters. For example:\n"
+                f"async function doTask(bot) {{}}\n\n"
+                f"Please try again with corrected code."
+            )
+            self.messages = [
+                self.messages[0],
+                HumanMessage(content=error_feedback),
+            ]
         assert len(self.messages) == 2
         self.action_agent_rollout_num_iter += 1
         done = (
