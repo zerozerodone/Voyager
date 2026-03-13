@@ -80,6 +80,8 @@ class CriticAgent:
 
         print(f"\033[31m****Critic Agent human message****\n{observation}\033[0m")
         if screenshot:
+            kb = len(screenshot) * 3 // 4 // 1024
+            print(f"\033[36m[Vision] Critic Agent: screenshot attached ({kb} KB)\033[0m")
             return HumanMessage(content=[
                 {"type": "text", "text": observation},
                 {
@@ -89,6 +91,8 @@ class CriticAgent:
                     },
                 },
             ])
+        else:
+            print("\033[36m[Vision] Critic Agent: no screenshot available\033[0m")
         return HumanMessage(content=observation)
 
     def human_check_task_success(self):

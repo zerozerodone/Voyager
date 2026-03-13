@@ -195,6 +195,8 @@ class ActionAgent:
             observation += f"Critique: None\n\n"
 
         if screenshot:
+            kb = len(screenshot) * 3 // 4 // 1024
+            print(f"\033[36m[Vision] Action Agent: screenshot attached ({kb} KB)\033[0m")
             return HumanMessage(content=[
                 {"type": "text", "text": observation},
                 {
@@ -204,6 +206,8 @@ class ActionAgent:
                     },
                 },
             ])
+        else:
+            print("\033[36m[Vision] Action Agent: no screenshot available\033[0m")
         return HumanMessage(content=observation)
 
     def process_ai_message(self, message):
