@@ -276,21 +276,15 @@ if "image" in err_str or "vision" in err_str or "multimodal" in err_str or "cont
 ## 12. Redundancy Removal Reduces LLM Grounding When Screenshots Fail Silently
 
 **Severity: Low**
-**Status: Current**
+**Status: Resolved**
 
 ### Description
 
-When a screenshot is provided, the action and critic agents omit textual observations for Biome, Time, Nearby blocks, and Nearby entities. However, if the screenshot is a corrupted/blank image (e.g., the viewer hasn't finished loading, the world hasn't rendered, or the capture returned a valid but meaningless JPEG), the LLM receives neither visual nor textual information about the environment.
+Previously, when a screenshot was provided, the action and critic agents omitted textual observations for Biome, Time, Nearby blocks, and Nearby entities.
 
-### Risk
+### Resolution
 
-- The bot operates blind — the LLM generates code without knowledge of its surroundings, leading to nonsensical or dangerous actions.
-- There is no validation that the screenshot actually contains meaningful content before stripping the textual fallback.
-
-### Mitigation
-
-- Validate the screenshot before stripping text: check file size (a blank/black JPEG is typically < 2KB at 512×512), or compute a simple entropy/variance metric on the raw pixels.
-- If the screenshot fails validation, fall back to the full text observation as if no screenshot was provided.
+All structured text fields are now always included regardless of screenshot presence. The screenshot serves as supplementary visual context alongside the full text. The LLM needs exact block/entity names as structured data for code generation — a screenshot alone cannot reliably convey identifiers like `oak_log` vs `birch_log`.
 
 ---
 
@@ -309,4 +303,4 @@ When a screenshot is provided, the action and critic agents omit textual observa
 | 9 | Unbounded base64 payload size | Low–Medium | Current |
 | 10 | Dependency supply chain risk | Medium | Prospective |
 | 11 | Vision fallback externally triggerable | Low | Current |
-| 12 | Redundancy removal with silent screenshot failure | Low | Current |
+| 12 | Redundancy removal with silent screenshot failure | Low | **Resolved** (text always included) |
