@@ -1,7 +1,7 @@
 from voyager.prompts import load_prompt
 from voyager.utils.json_utils import fix_and_parse_json
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 
 
 class CriticAgent:
@@ -13,7 +13,7 @@ class CriticAgent:
         mode="auto",
     ):
         self.llm = ChatOpenAI(
-            model_name=model_name,
+            model=model_name,
             temperature=temperature,
             request_timeout=request_timout,
         )
@@ -24,33 +24,44 @@ class CriticAgent:
         system_message = SystemMessage(content=load_prompt("critic"))
         return system_message
 
-    def render_human_message(self, *, events, task, context, chest_observation):
-        assert events[-1][0] == "observe", "Last event must be observe"
-        biome = events[-1][1]["status"]["biome"]
-        time_of_day = events[-1][1]["status"]["timeOfDay"]
-        voxels = events[-1][1]["voxels"]
-        health = events[-1][1]["status"]["health"]
-        hunger = events[-1][1]["status"]["food"]
-        position = events[-1][1]["status"]["position"]
-        equipment = events[-1][1]["status"]["equipment"]
-        inventory_used = events[-1][1]["status"]["inventoryUsed"]
-        inventory = events[-1][1]["inventory"]
-
-        for i, (event_type, event) in enumerate(events):
-            if event_type == "onError":
+    def render_human_message(self, *, events, task, context, chest_observation, screenshot=None):
+        observe_event = None
+        for event_type, event in events:
+            if event_type == "observe":
+                observe_event = event
+            elif event_type == "onError":
                 print(f"\033[31mCritic Agent: Error occurs {event['onError']}\033[0m")
                 return None
 
+        if observe_event is None:
+            return None
+
+        biome = observe_event["status"]["biome"]
+        time_of_day = observe_event["status"]["timeOfDay"]
+        voxels = observe_event["voxels"]
+        health = observe_event["status"]["health"]
+        hunger = observe_event["status"]["food"]
+        position = observe_event["status"]["position"]
+        equipment = observe_event["status"]["equipment"]
+        inventory_used = observe_event["status"]["inventoryUsed"]
+        inventory = observe_event["inventory"]
+
         observation = ""
 
-        observation += f"Biome: {biome}\n\n"
-
-        observation += f"Time: {time_of_day}\n\n"
-
-        if voxels:
-            observation += f"Nearby blocks: {', '.join(voxels)}\n\n"
+        if screenshot:
+            observation += (
+                "(A screenshot of the bot's current view is attached. "
+                "Use it to understand the surroundings.)\n\n"
+            )
         else:
-            observation += f"Nearby blocks: None\n\n"
+            observation += f"Biome: {biome}\n\n"
+
+            observation += f"Time: {time_of_day}\n\n"
+
+            if voxels:
+                observation += f"Nearby blocks: {', '.join(voxels)}\n\n"
+            else:
+                observation += f"Nearby blocks: None\n\n"
 
         observation += f"Health: {health:.1f}/20\n\n"
         observation += f"Hunger: {hunger:.1f}/20\n\n"
@@ -74,6 +85,16 @@ class CriticAgent:
             observation += f"Context: None\n\n"
 
         print(f"\033[31m****Critic Agent human message****\n{observation}\033[0m")
+        if screenshot:
+            return HumanMessage(content=[
+                {"type": "text", "text": observation},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{screenshot}",
+                    },
+                },
+            ])
         return HumanMessage(content=observation)
 
     def human_check_task_success(self):
@@ -98,7 +119,7 @@ class CriticAgent:
         if messages[1] is None:
             return False, ""
 
-        critic = self.llm(messages).content
+        critic = self.llm.invoke(messages).content
         print(f"\033[31m****Critic Agent ai message****\n{critic}\033[0m")
         try:
             response = fix_and_parse_json(critic)
@@ -114,13 +135,14 @@ class CriticAgent:
             )
 
     def check_task_success(
-        self, *, events, task, context, chest_observation, max_retries=5
+        self, *, events, task, context, chest_observation, max_retries=5, screenshot=None
     ):
         human_message = self.render_human_message(
             events=events,
             task=task,
             context=context,
             chest_observation=chest_observation,
+            screenshot=screenshot,
         )
 
         messages = [

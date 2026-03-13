@@ -36,6 +36,8 @@ class EventRecorder:
                 events[0][1]["status"]["position"]["z"],
             ]
         for event_type, event in events:
+            if not isinstance(event, dict):
+                continue
             self.update_items(event)
             if event_type == "observe":
                 self.update_elapsed_time(event)
@@ -43,7 +45,8 @@ class EventRecorder:
             f"\033[96m****Recorder message: {self.elapsed_time} ticks have elapsed****\033[0m\n"
             f"\033[96m****Recorder message: {self.iteration} iteration passed****\033[0m"
         )
-        dump_json(events, f_join(self.ckpt_dir, "events", task))
+        events_to_save = [e for e in events if e[0] != "screenshot"]
+        dump_json(events_to_save, f_join(self.ckpt_dir, "events", task))
 
     def resume(self, cutoff=None):
         self.item_history = set()
@@ -69,6 +72,8 @@ class EventRecorder:
                     events[0][1]["status"]["position"]["z"],
                 )
             for event_type, event in events:
+                if not isinstance(event, dict):
+                    continue
                 self.update_items(event)
                 self.update_position(event)
                 if event_type == "observe":

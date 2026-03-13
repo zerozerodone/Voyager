@@ -15,6 +15,20 @@ from .agents import SkillManager
 
 # TODO: remove event memory
 class Voyager:
+    @staticmethod
+    def _extract_screenshot(events):
+        for event_type, event in events:
+            if event_type == "screenshot":
+                return event
+        return None
+
+    @staticmethod
+    def _find_observe(events):
+        for event_type, event in events:
+            if event_type == "observe":
+                return event
+        return None
+
     def __init__(
         self,
         mc_port: int = None,
@@ -48,6 +62,7 @@ class Voyager:
         ckpt_dir: str = "ckpt",
         skill_library_dir: str = None,
         resume: bool = False,
+        enable_vision: bool = True,
     ):
         """
         The main class for Voyager.
@@ -154,6 +169,10 @@ class Voyager:
         self.recorder = U.EventRecorder(ckpt_dir=ckpt_dir, resume=resume)
         self.resume = resume
 
+        # vision support
+        self.enable_vision = enable_vision
+        self._vision_supported = enable_vision
+
         # init variables for rollout
         self.action_agent_rollout_num_iter = -1
         self.task = None
@@ -161,6 +180,11 @@ class Voyager:
         self.messages = None
         self.conversations = []
         self.last_events = None
+
+    def _get_screenshot_for_llm(self, events):
+        if not self._vision_supported:
+            return None
+        return self._extract_screenshot(events)
 
     def reset(self, task, context="", reset_env=True):
         self.action_agent_rollout_num_iter = 0
@@ -187,11 +211,16 @@ class Voyager:
         )
         system_message = self.action_agent.render_system_message(skills=skills)
         human_message = self.action_agent.render_human_message(
-            events=events, code="", task=self.task, context=context, critique=""
+            events=events,
+            code="",
+            task=self.task,
+            context=context,
+            critique="",
+            screenshot=self._get_screenshot_for_llm(events),
         )
         self.messages = [system_message, human_message]
         print(
-            f"\033[32m****Action Agent human message****\n{human_message.content}\033[0m"
+            f"\033[32m****Action Agent human message****\n{human_message.content if isinstance(human_message.content, str) else human_message.content[0]['text']}\033[0m"
         )
         assert len(self.messages) == 2
         self.conversations = []
@@ -200,13 +229,52 @@ class Voyager:
     def close(self):
         self.env.close()
 
+    def _invoke_with_vision_fallback(self, llm, messages):
+        try:
+            return llm.invoke(messages)
+        except Exception as e:
+            err_str = str(e).lower()
+            if self._vision_supported and (
+                "image" in err_str
+                or "vision" in err_str
+                or "multimodal" in err_str
+                or "content_type" in err_str
+            ):
+                print(
+                    "\033[33m[Vision] Model does not support images, "
+                    "disabling vision for this session.\033[0m"
+                )
+                self._vision_supported = False
+                text_messages = self._strip_images(messages)
+                return llm.invoke(text_messages)
+            raise
+
+    @staticmethod
+    def _strip_images(messages):
+        stripped = []
+        for msg in messages:
+            if isinstance(msg.content, list):
+                text_parts = [
+                    block for block in msg.content if block.get("type") == "text"
+                ]
+                text = "\n".join(p["text"] for p in text_parts)
+                stripped.append(msg.__class__(content=text))
+            else:
+                stripped.append(msg)
+        return stripped
+
     def step(self):
         if self.action_agent_rollout_num_iter < 0:
             raise ValueError("Agent must be reset before stepping")
-        ai_message = self.action_agent.llm(self.messages)
+        ai_message = self._invoke_with_vision_fallback(
+            self.action_agent.llm, self.messages
+        )
         print(f"\033[34m****Action Agent ai message****\n{ai_message.content}\033[0m")
+        human_content = self.messages[1].content
+        if isinstance(human_content, list):
+            human_content = human_content[0]["text"]
         self.conversations.append(
-            (self.messages[0].content, self.messages[1].content, ai_message.content)
+            (self.messages[0].content, human_content, ai_message.content)
         )
         parsed_result = self.action_agent.process_ai_message(message=ai_message)
         success = False
@@ -217,17 +285,19 @@ class Voyager:
                 programs=self.skill_manager.programs,
             )
             self.recorder.record(events, self.task)
-            self.action_agent.update_chest_memory(events[-1][1]["nearbyChests"])
+            observe = self._find_observe(events)
+            self.action_agent.update_chest_memory(observe["nearbyChests"])
+            screenshot = self._get_screenshot_for_llm(events)
             success, critique = self.critic_agent.check_task_success(
                 events=events,
                 task=self.task,
                 context=self.context,
                 chest_observation=self.action_agent.render_chest_observation(),
                 max_retries=5,
+                screenshot=screenshot,
             )
 
             if self.reset_placed_if_failed and not success:
-                # revert all the placing event in the last step
                 blocks = []
                 positions = []
                 for event_type, event in events:
@@ -240,8 +310,9 @@ class Voyager:
                     f"await givePlacedItemBack(bot, {U.json_dumps(blocks)}, {U.json_dumps(positions)})",
                     programs=self.skill_manager.programs,
                 )
-                events[-1][1]["inventory"] = new_events[-1][1]["inventory"]
-                events[-1][1]["voxels"] = new_events[-1][1]["voxels"]
+                new_observe = self._find_observe(new_events)
+                observe["inventory"] = new_observe["inventory"]
+                observe["voxels"] = new_observe["voxels"]
             new_skills = self.skill_manager.retrieve_skills(
                 query=self.context
                 + "\n\n"
@@ -254,6 +325,7 @@ class Voyager:
                 task=self.task,
                 context=self.context,
                 critique=critique,
+                screenshot=self._get_screenshot_for_llm(events),
             )
             self.last_events = copy.deepcopy(events)
             self.messages = [system_message, human_message]
@@ -279,8 +351,11 @@ class Voyager:
             info["program_code"] = parsed_result["program_code"]
             info["program_name"] = parsed_result["program_name"]
         else:
+            msg_content = self.messages[-1].content
+            if isinstance(msg_content, list):
+                msg_content = msg_content[0]["text"]
             print(
-                f"\033[32m****Action Agent human message****\n{self.messages[-1].content}\033[0m"
+                f"\033[32m****Action Agent human message****\n{msg_content}\033[0m"
             )
         return self.messages, 0, done, info
 
@@ -337,13 +412,14 @@ class Voyager:
                     "success": False,
                 }
                 # reset bot status here
+                last_observe = self._find_observe(self.last_events)
                 self.last_events = self.env.reset(
                     options={
                         "mode": "hard",
                         "wait_ticks": self.env_wait_ticks,
-                        "inventory": self.last_events[-1][1]["inventory"],
-                        "equipment": self.last_events[-1][1]["status"]["equipment"],
-                        "position": self.last_events[-1][1]["status"]["position"],
+                        "inventory": last_observe["inventory"],
+                        "equipment": last_observe["status"]["equipment"],
+                        "position": last_observe["status"]["position"],
                     }
                 )
                 # use red color background to print the error

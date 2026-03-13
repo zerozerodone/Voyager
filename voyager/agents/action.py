@@ -3,9 +3,9 @@ import time
 
 import voyager.utils as U
 from javascript import require
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import SystemMessagePromptTemplate
-from langchain.schema import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import SystemMessagePromptTemplate
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from voyager.prompts import load_prompt
 from voyager.control_primitives_context import load_control_primitives_context
@@ -32,7 +32,7 @@ class ActionAgent:
         else:
             self.chest_memory = {}
         self.llm = ChatOpenAI(
-            model_name=model_name,
+            model=model_name,
             temperature=temperature,
             request_timeout=request_timout,
         )
@@ -83,7 +83,7 @@ class ActionAgent:
             "smeltItem",
             "killMob",
         ]
-        if not self.llm.model_name == "gpt-3.5-turbo":
+        if not self.llm.model == "gpt-3.5-turbo":
             base_skills += [
                 "useChest",
                 "mineflayer",
@@ -100,13 +100,12 @@ class ActionAgent:
         return system_message
 
     def render_human_message(
-        self, *, events, code="", task="", context="", critique=""
+        self, *, events, code="", task="", context="", critique="", screenshot=None
     ):
         chat_messages = []
         error_messages = []
         # FIXME: damage_messages is not used
         damage_messages = []
-        assert events[-1][0] == "observe", "Last event must be observe"
         for i, (event_type, event) in enumerate(events):
             if event_type == "onChat":
                 chat_messages.append(event["onChat"])
@@ -125,7 +124,6 @@ class ActionAgent:
                 equipment = event["status"]["equipment"]
                 inventory_used = event["status"]["inventoryUsed"]
                 inventory = event["inventory"]
-                assert i == len(events) - 1, "observe must be the last event"
 
         observation = ""
 
@@ -148,22 +146,28 @@ class ActionAgent:
             else:
                 observation += f"Chat log: None\n\n"
 
-        observation += f"Biome: {biome}\n\n"
-
-        observation += f"Time: {time_of_day}\n\n"
-
-        if voxels:
-            observation += f"Nearby blocks: {', '.join(voxels)}\n\n"
+        if screenshot:
+            observation += (
+                "(A screenshot of the bot's current view is attached. "
+                "Use it to understand the surroundings.)\n\n"
+            )
         else:
-            observation += f"Nearby blocks: None\n\n"
+            observation += f"Biome: {biome}\n\n"
 
-        if entities:
-            nearby_entities = [
-                k for k, v in sorted(entities.items(), key=lambda x: x[1])
-            ]
-            observation += f"Nearby entities (nearest to farthest): {', '.join(nearby_entities)}\n\n"
-        else:
-            observation += f"Nearby entities (nearest to farthest): None\n\n"
+            observation += f"Time: {time_of_day}\n\n"
+
+            if voxels:
+                observation += f"Nearby blocks: {', '.join(voxels)}\n\n"
+            else:
+                observation += f"Nearby blocks: None\n\n"
+
+            if entities:
+                nearby_entities = [
+                    k for k, v in sorted(entities.items(), key=lambda x: x[1])
+                ]
+                observation += f"Nearby entities (nearest to farthest): {', '.join(nearby_entities)}\n\n"
+            else:
+                observation += f"Nearby entities (nearest to farthest): None\n\n"
 
         observation += f"Health: {health:.1f}/20\n\n"
 
@@ -196,6 +200,16 @@ class ActionAgent:
         else:
             observation += f"Critique: None\n\n"
 
+        if screenshot:
+            return HumanMessage(content=[
+                {"type": "text", "text": observation},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{screenshot}",
+                    },
+                },
+            ])
         return HumanMessage(content=observation)
 
     def process_ai_message(self, message):

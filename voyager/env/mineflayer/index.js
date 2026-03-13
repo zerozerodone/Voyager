@@ -4,6 +4,7 @@ const bodyParser = require("body-parser");
 const mineflayer = require("mineflayer");
 
 const skills = require("./lib/skillLoader");
+const screenshot = require("./lib/screenshot");
 const { initCounter, getNextTime } = require("./lib/utils");
 const obs = require("./lib/observation/base");
 const OnChat = require("./lib/observation/onChat");
@@ -15,12 +16,43 @@ const OnSave = require("./lib/observation/onSave");
 const Chests = require("./lib/observation/chests");
 const { plugin: tool } = require("mineflayer-tool");
 
+const AUTH_TOKEN = process.env.VOYAGER_AUTH_TOKEN || "";
+
+const ALLOWED_MODULES = new Set([
+    "mineflayer-pathfinder",
+    "mineflayer-tool",
+    "mineflayer-collectblock",
+    "mineflayer-pvp",
+    "minecrafthawkeye",
+    "minecraft-data",
+    "vec3",
+]);
+
+const _realRequire = require;
+function sandboxedRequire(name) {
+    if (ALLOWED_MODULES.has(name)) {
+        return _realRequire(name);
+    }
+    throw new Error(`[Sandbox] require('${name}') is not allowed`);
+}
+
 let bot = null;
 
 const app = express();
 
 app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ limit: "50mb", extended: false }));
+
+if (AUTH_TOKEN) {
+    app.use((req, res, next) => {
+        const header = req.headers["authorization"] || "";
+        const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+        if (token !== AUTH_TOKEN) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        next();
+    });
+}
 
 app.post("/start", (req, res) => {
     if (bot) onDisconnect("Restarting bot");
@@ -99,7 +131,7 @@ app.post("/start", (req, res) => {
         const tool = require("mineflayer-tool").plugin;
         const collectBlock = require("mineflayer-collectblock").plugin;
         const pvp = require("mineflayer-pvp").plugin;
-        const minecraftHawkEye = require("minecrafthawkeye");
+        const minecraftHawkEye = require("minecrafthawkeye").default;
         bot.loadPlugin(pathfinder);
         bot.loadPlugin(tool);
         bot.loadPlugin(collectBlock);
@@ -120,6 +152,7 @@ app.post("/start", (req, res) => {
             BlockRecords,
         ]);
         skills.inject(bot);
+        screenshot.inject(bot);
 
         if (req.body.spread) {
             bot.chat(`/spreadplayers ~ ~ 0 300 under 80 false @s`);
@@ -127,17 +160,24 @@ app.post("/start", (req, res) => {
         }
 
         await bot.waitForTicks(bot.waitTicks * itemTicks);
-        res.json(bot.observe());
+
+        const obsData = bot.observe();
+        const screenshotB64 = await bot.screenshot();
+        const events = JSON.parse(obsData);
+        events.push(["screenshot", screenshotB64]);
+        res.json(JSON.stringify(events));
 
         initCounter(bot);
         bot.chat("/gamerule keepInventory true");
         bot.chat("/gamerule doDaylightCycle false");
+        bot.chat("/gamerule doImmediateRespawn true");
+        bot.chat("/spawnpoint @s ~ ~ ~");
     });
 
     function onConnectionFailed(e) {
         console.log(e);
         bot = null;
-        res.status(400).json({ error: e });
+        res.status(400).json({ error: e.message || String(e) });
     }
     function onDisconnect(message) {
         if (bot.viewer) {
@@ -155,10 +195,14 @@ app.post("/step", async (req, res) => {
     function otherError(err) {
         console.log("Uncaught Error");
         bot.emit("error", handleError(err));
-        bot.waitForTicks(bot.waitTicks).then(() => {
+        bot.waitForTicks(bot.waitTicks).then(async () => {
             if (!response_sent) {
                 response_sent = true;
-                res.json(bot.observe());
+                const obsData = bot.observe();
+                const screenshotB64 = await bot.screenshot();
+                const events = JSON.parse(obsData);
+                events.push(["screenshot", screenshotB64]);
+                res.json(JSON.stringify(events));
             }
         });
     }
@@ -222,7 +266,7 @@ app.post("/step", async (req, res) => {
         }
     }
 
-    bot.on("physicTick", onTick);
+    bot.on("physicsTick", onTick);
 
     // initialize fail count
     let _craftItemFailCount = 0;
@@ -246,13 +290,20 @@ app.post("/step", async (req, res) => {
     await bot.waitForTicks(bot.waitTicks);
     if (!response_sent) {
         response_sent = true;
-        res.json(bot.observe());
+        const obsData = bot.observe();
+        const screenshotB64 = await bot.screenshot();
+        const events = JSON.parse(obsData);
+        events.push(["screenshot", screenshotB64]);
+        res.json(JSON.stringify(events));
     }
-    bot.removeListener("physicTick", onTick);
+    bot.removeListener("physicsTick", onTick);
 
     async function evaluateCode(code, programs) {
-        // Echo the code produced for players to see it. Don't echo when the bot code is already producing dialog or it will double echo
         try {
+            const require = sandboxedRequire;
+            const process = undefined;
+            const global = undefined;
+            const globalThis = undefined;
             await eval("(async () => {" + programs + "\n" + code + "})()");
             return "success";
         } catch (err) {
@@ -410,7 +461,18 @@ app.post("/pause", (req, res) => {
         res.status(400).json({ error: "Bot not spawned" });
         return;
     }
-    bot.chat("/pause");
+    bot.chat("/tick freeze");
+    bot.waitForTicks(bot.waitTicks).then(() => {
+        res.json({ message: "Success" });
+    });
+});
+
+app.post("/unpause", (req, res) => {
+    if (!bot) {
+        res.status(400).json({ error: "Bot not spawned" });
+        return;
+    }
+    bot.chat("/tick unfreeze");
     bot.waitForTicks(bot.waitTicks).then(() => {
         res.json({ message: "Success" });
     });
@@ -420,6 +482,6 @@ app.post("/pause", (req, res) => {
 
 const DEFAULT_PORT = 3000;
 const PORT = process.argv[2] || DEFAULT_PORT;
-app.listen(PORT, () => {
+app.listen(PORT, "127.0.0.1", () => {
     console.log(`Server started on port ${PORT}`);
 });

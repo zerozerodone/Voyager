@@ -1,5 +1,12 @@
 ckpt*
 
+# Project-specific files.
+log.sh
+main.py
+pyproject.toml
+uv.lock
+voyager_local.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

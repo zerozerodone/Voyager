@@ -1,4 +1,7 @@
+import os
 import os.path
+import secrets
+import shutil
 import time
 import warnings
 from typing import SupportsFloat, Any, Tuple, Dict
@@ -13,6 +16,51 @@ import voyager.utils as U
 
 from .minecraft_launcher import MinecraftInstance
 from .process_monitor import SubprocessMonitor
+
+_NODE22_SEARCH_PATHS = [
+    os.path.expanduser("~/.local/node22/bin/node"),
+    os.path.expanduser("~/.local/node20/bin/node"),
+]
+
+_CODE_BLOCKLIST = [
+    "child_process",
+    "process.exit",
+    "process.env",
+    "process.kill",
+    "require('fs')",
+    'require("fs")',
+    "require('net')",
+    'require("net")',
+    "require('http')",
+    'require("http")',
+    "require('https')",
+    'require("https")',
+    "require('os')",
+    'require("os")',
+    "require('dgram')",
+    'require("dgram")',
+    "import(",
+]
+
+
+def _find_node_binary():
+    for path in _NODE22_SEARCH_PATHS:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    system_node = shutil.which("node")
+    if system_node:
+        return system_node
+    raise FileNotFoundError(
+        "No Node.js binary found. Install Node 22 LTS to ~/.local/node22/"
+    )
+
+
+def validate_code(code: str) -> None:
+    for pattern in _CODE_BLOCKLIST:
+        if pattern in code:
+            raise ValueError(
+                f"[Sandbox] Code rejected: contains blocked pattern '{pattern}'"
+            )
 
 
 class VoyagerEnv(gym.Env):
@@ -37,6 +85,11 @@ class VoyagerEnv(gym.Env):
         self.server_port = server_port
         self.request_timeout = request_timeout
         self.log_path = log_path
+
+        self.auth_token = secrets.token_hex(32)
+        self._auth_headers = {"Authorization": f"Bearer {self.auth_token}"}
+        os.environ["VOYAGER_AUTH_TOKEN"] = self.auth_token
+
         self.mineflayer = self.get_mineflayer_process(server_port)
         if azure_login:
             self.mc_instance = self.get_mc_instance()
@@ -50,9 +103,11 @@ class VoyagerEnv(gym.Env):
     def get_mineflayer_process(self, server_port):
         U.f_mkdir(self.log_path, "mineflayer")
         file_path = os.path.abspath(os.path.dirname(__file__))
+        node_bin = _find_node_binary()
+        print(f"Using Node.js binary: {node_bin}")
         return SubprocessMonitor(
             commands=[
-                "node",
+                node_bin,
                 U.f_join(file_path, "mineflayer/index.js"),
                 str(server_port),
             ],
@@ -94,6 +149,7 @@ class VoyagerEnv(gym.Env):
                 f"{self.server}/start",
                 json=self.reset_options,
                 timeout=self.request_timeout,
+                headers=self._auth_headers,
             )
             if res.status_code != 200:
                 self.mineflayer.stop()
@@ -109,6 +165,7 @@ class VoyagerEnv(gym.Env):
     ) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         if not self.has_reset:
             raise RuntimeError("Environment has not been reset yet")
+        validate_code(code)
         self.check_process()
         self.unpause()
         data = {
@@ -116,7 +173,10 @@ class VoyagerEnv(gym.Env):
             "programs": programs,
         }
         res = requests.post(
-            f"{self.server}/step", json=data, timeout=self.request_timeout
+            f"{self.server}/step",
+            json=data,
+            timeout=self.request_timeout,
+            headers=self._auth_headers,
         )
         if res.status_code != 200:
             raise RuntimeError("Failed to step Minecraft server")
@@ -164,7 +224,9 @@ class VoyagerEnv(gym.Env):
     def close(self):
         self.unpause()
         if self.connected:
-            res = requests.post(f"{self.server}/stop")
+            res = requests.post(
+                f"{self.server}/stop", headers=self._auth_headers
+            )
             if res.status_code == 200:
                 self.connected = False
         if self.mc_instance:
@@ -174,14 +236,18 @@ class VoyagerEnv(gym.Env):
 
     def pause(self):
         if self.mineflayer.is_running and not self.server_paused:
-            res = requests.post(f"{self.server}/pause")
+            res = requests.post(
+                f"{self.server}/pause", headers=self._auth_headers
+            )
             if res.status_code == 200:
                 self.server_paused = True
         return self.server_paused
 
     def unpause(self):
         if self.mineflayer.is_running and self.server_paused:
-            res = requests.post(f"{self.server}/pause")
+            res = requests.post(
+                f"{self.server}/unpause", headers=self._auth_headers
+            )
             if res.status_code == 200:
                 self.server_paused = False
             else:
