@@ -60,11 +60,13 @@ class Voyager:
         skill_manager_model_name: str = "gpt-3.5-turbo",
         skill_manager_temperature: float = 0,
         skill_manager_retrieval_top_k: int = 5,
+        embedding_model_name: str = "text-embedding-ada-002",
         openai_api_request_timeout: int = 240,
         ckpt_dir: str = "ckpt",
         skill_library_dir: str = None,
         resume: bool = False,
         enable_vision: bool = True,
+        pause_between_steps: bool = True,
     ):
         """
         The main class for Voyager.
@@ -112,6 +114,7 @@ class Voyager:
         :param skill_manager_model_name: skill manager model name
         :param skill_manager_temperature: skill manager temperature
         :param skill_manager_retrieval_top_k: how many skills to retrieve for each task
+        :param embedding_model_name: embedding model name for vectordb (use an Ollama-compatible model when running locally, e.g. "nomic-embed-text")
         :param openai_api_request_timeout: how many seconds to wait for openai api
         :param ckpt_dir: checkpoint dir
         :param skill_library_dir: skill library dir
@@ -123,6 +126,7 @@ class Voyager:
             azure_login=azure_login,
             server_port=server_port,
             request_timeout=env_request_timeout,
+            pause_between_steps=pause_between_steps,
         )
         self.env_wait_ticks = env_wait_ticks
         self.reset_placed_if_failed = reset_placed_if_failed
@@ -153,6 +157,7 @@ class Voyager:
             mode=curriculum_agent_mode,
             warm_up=curriculum_agent_warm_up,
             core_inventory_items=curriculum_agent_core_inventory_items,
+            embedding_model_name=embedding_model_name,
         )
         self.critic_agent = CriticAgent(
             model_name=critic_agent_model_name,
@@ -167,6 +172,7 @@ class Voyager:
             request_timout=openai_api_request_timeout,
             ckpt_dir=skill_library_dir if skill_library_dir else ckpt_dir,
             resume=True if resume or skill_library_dir else False,
+            embedding_model_name=embedding_model_name,
         )
         self.recorder = U.EventRecorder(ckpt_dir=ckpt_dir, resume=resume)
         self.resume = resume
@@ -410,6 +416,13 @@ class Voyager:
                 chest_observation=self.action_agent.render_chest_observation(),
                 max_retries=5,
             )
+            task_fail_count = self.curriculum_agent.failed_tasks.count(task)
+            if task_fail_count >= self.curriculum_agent.FAILED_TASK_RETRY_LIMIT:
+                print(
+                    f"\033[35mSkipping task '{task}': already failed "
+                    f"{task_fail_count} time(s) — requesting a new task.\033[0m"
+                )
+                continue
             print(
                 f"\033[35mStarting task {task} for at most {self.action_agent_task_max_retries} times\033[0m"
             )

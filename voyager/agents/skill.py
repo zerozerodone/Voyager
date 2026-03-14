@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import voyager.utils as U
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -18,6 +19,7 @@ class SkillManager:
         request_timout=120,
         ckpt_dir="ckpt",
         resume=False,
+        embedding_model_name="text-embedding-ada-002",
     ):
         self.llm = ChatOpenAI(
             model=model_name,
@@ -26,7 +28,10 @@ class SkillManager:
         )
         U.f_mkdir(f"{ckpt_dir}/skill/code")
         U.f_mkdir(f"{ckpt_dir}/skill/description")
-        U.f_mkdir(f"{ckpt_dir}/skill/vectordb")
+        vectordb_dir = f"{ckpt_dir}/skill/vectordb"
+        if not resume and os.path.exists(vectordb_dir):
+            shutil.rmtree(vectordb_dir)
+        U.f_mkdir(vectordb_dir)
         # programs for env execution
         self.control_primitives = load_control_primitives()
         if resume:
@@ -38,7 +43,10 @@ class SkillManager:
         self.ckpt_dir = ckpt_dir
         self.vectordb = Chroma(
             collection_name="skill_vectordb",
-            embedding_function=OpenAIEmbeddings(),
+            embedding_function=OpenAIEmbeddings(
+                model=embedding_model_name,
+                check_embedding_ctx_length=False,
+            ),
             persist_directory=f"{ckpt_dir}/skill/vectordb",
         )
         assert self.vectordb._collection.count() == len(self.skills), (
@@ -96,7 +104,6 @@ class SkillManager:
             f"{self.ckpt_dir}/skill/description/{dumped_program_name}.txt",
         )
         U.dump_json(self.skills, f"{self.ckpt_dir}/skill/skills.json")
-        self.vectordb.persist()
 
     def generate_skill_description(self, program_name, program_code):
         messages = [
