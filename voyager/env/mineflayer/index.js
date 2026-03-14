@@ -59,9 +59,9 @@ app.post("/start", (req, res) => {
     bot = null;
     console.log(req.body);
     bot = mineflayer.createBot({
-        host: "localhost", // minecraft server ip
-        port: req.body.port, // minecraft server port
-        username: "bot",
+        host: "localhost",
+        port: req.body.port,
+        username: req.body.username || "bot",
         disableChatSigning: true,
         checkTimeoutInterval: 60 * 60 * 1000,
     });
@@ -153,6 +153,11 @@ app.post("/start", (req, res) => {
         ]);
         skills.inject(bot);
         screenshot.inject(bot);
+
+        if (req.body.skin) {
+            bot.chat(`/skin set ${req.body.skin}`);
+            await bot.waitForTicks(40);
+        }
 
         if (req.body.spread) {
             bot.chat(`/spreadplayers ~ ~ 0 300 under 80 false @s`);

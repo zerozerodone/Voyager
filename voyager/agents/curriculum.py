@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import random
 import re
+import shutil
+from collections import Counter
 
 import voyager.utils as U
 from voyager.prompts import load_prompt
@@ -24,6 +27,7 @@ class CurriculumAgent:
         mode="auto",
         warm_up=None,
         core_inventory_items: str | None = None,
+        embedding_model_name="text-embedding-ada-002",
     ):
         self.llm = ChatOpenAI(
             model=model_name,
@@ -41,7 +45,10 @@ class CurriculumAgent:
         ], f"mode {mode} not supported"
         self.mode = mode
         self.ckpt_dir = ckpt_dir
-        U.f_mkdir(f"{ckpt_dir}/curriculum/vectordb")
+        vectordb_dir = f"{ckpt_dir}/curriculum/vectordb"
+        if not resume and os.path.exists(vectordb_dir):
+            shutil.rmtree(vectordb_dir)
+        U.f_mkdir(vectordb_dir)
         if resume:
             print(f"\033[35mLoading Curriculum Agent from {ckpt_dir}/curriculum\033[0m")
             self.completed_tasks = U.load_json(
@@ -56,7 +63,10 @@ class CurriculumAgent:
         # vectordb for qa cache
         self.qa_cache_questions_vectordb = Chroma(
             collection_name="qa_cache_questions_vectordb",
-            embedding_function=OpenAIEmbeddings(),
+            embedding_function=OpenAIEmbeddings(
+                model=embedding_model_name,
+                check_embedding_ctx_length=False,
+            ),
             persist_directory=f"{ckpt_dir}/curriculum/vectordb",
         )
         assert self.qa_cache_questions_vectordb._collection.count() == len(
@@ -184,7 +194,13 @@ class CurriculumAgent:
         completed_tasks = (
             ", ".join(self.completed_tasks) if self.completed_tasks else "None"
         )
-        failed_tasks = ", ".join(self.failed_tasks) if self.failed_tasks else "None"
+        if self.failed_tasks:
+            counts = Counter(self.failed_tasks)
+            failed_tasks = ", ".join(
+                f"{task} (×{n})" if n > 1 else task for task, n in counts.items()
+            )
+        else:
+            failed_tasks = "None"
 
         # filter out optional inventory items if required
         if self.progress < self.warm_up["optional_inventory_items"]:
@@ -296,6 +312,9 @@ class CurriculumAgent:
         else:
             raise ValueError(f"Invalid curriculum agent mode: {self.mode}")
 
+    # Tasks that have failed this many times or more will not be re-proposed.
+    FAILED_TASK_RETRY_LIMIT = 3
+
     def propose_next_ai_task(self, *, messages, max_retries=5):
         if max_retries == 0:
             raise RuntimeError("Max retries reached, failed to propose ai task.")
@@ -304,8 +323,26 @@ class CurriculumAgent:
         try:
             response = self.parse_ai_message(curriculum)
             assert "next_task" in response
-            context = self.get_task_context(response["next_task"])
-            return response["next_task"], context
+            proposed = response["next_task"]
+            fail_count = self.failed_tasks.count(proposed)
+            if fail_count >= self.FAILED_TASK_RETRY_LIMIT:
+                print(
+                    f"\033[35mCurriculum re-proposed '{proposed}' which has already "
+                    f"failed {fail_count} time(s). Redirecting.\033[0m"
+                )
+                redirect = list(messages) + [
+                    HumanMessage(
+                        content=(
+                            f"Task '{proposed}' has already failed {fail_count} times "
+                            f"and must be avoided. Please propose a completely different task."
+                        )
+                    )
+                ]
+                return self.propose_next_ai_task(
+                    messages=redirect, max_retries=max_retries - 1
+                )
+            context = self.get_task_context(proposed)
+            return proposed, context
         except Exception as e:
             print(
                 f"\033[35mError parsing curriculum response: {e}. Trying again!\033[0m"
@@ -415,7 +452,6 @@ class CurriculumAgent:
                 texts=[question],
             )
             U.dump_json(self.qa_cache, f"{self.ckpt_dir}/curriculum/qa_cache.json")
-            self.qa_cache_questions_vectordb.persist()
             questions.append(question)
             answers.append(answer)
         assert len(questions_new) == len(questions) == len(answers)
@@ -436,7 +472,6 @@ class CurriculumAgent:
                 texts=[question],
             )
             U.dump_json(self.qa_cache, f"{self.ckpt_dir}/curriculum/qa_cache.json")
-            self.qa_cache_questions_vectordb.persist()
         context = f"Question: {question}\n{answer}"
         return context
 

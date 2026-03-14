@@ -72,6 +72,9 @@ class VoyagerEnv(gym.Env):
         server_port=3000,
         request_timeout=600,
         log_path="./logs",
+        pause_between_steps=True,
+        bot_username="bot",
+        bot_skin=None,
     ):
         if not mc_port and not azure_login:
             raise ValueError("Either mc_port or azure_login must be specified")
@@ -85,6 +88,8 @@ class VoyagerEnv(gym.Env):
         self.server_port = server_port
         self.request_timeout = request_timeout
         self.log_path = log_path
+        self.bot_username = bot_username
+        self.bot_skin = bot_skin
 
         self.auth_token = secrets.token_hex(32)
         self._auth_headers = {"Authorization": f"Bearer {self.auth_token}"}
@@ -99,6 +104,7 @@ class VoyagerEnv(gym.Env):
         self.reset_options = None
         self.connected = False
         self.server_paused = False
+        self.pause_between_steps = pause_between_steps
 
     def get_mineflayer_process(self, server_port):
         U.f_mkdir(self.log_path, "mineflayer")
@@ -167,7 +173,8 @@ class VoyagerEnv(gym.Env):
             raise RuntimeError("Environment has not been reset yet")
         validate_code(code)
         self.check_process()
-        self.unpause()
+        if self.pause_between_steps:
+            self.unpause()
         data = {
             "code": code,
             "programs": programs,
@@ -181,7 +188,8 @@ class VoyagerEnv(gym.Env):
         if res.status_code != 200:
             raise RuntimeError("Failed to step Minecraft server")
         returned_data = res.json()
-        self.pause()
+        if self.pause_between_steps:
+            self.pause()
         return json.loads(returned_data)
 
     def render(self):
@@ -207,9 +215,12 @@ class VoyagerEnv(gym.Env):
             "spread": options.get("spread", False),
             "waitTicks": options.get("wait_ticks", 5),
             "position": options.get("position", None),
+            "username": self.bot_username,
+            "skin": self.bot_skin,
         }
 
-        self.unpause()
+        if self.pause_between_steps:
+            self.unpause()
         self.mineflayer.stop()
         time.sleep(1)  # wait for mineflayer to exit
 
@@ -218,11 +229,13 @@ class VoyagerEnv(gym.Env):
         self.connected = True
         # All the reset in step will be soft
         self.reset_options["reset"] = "soft"
-        self.pause()
+        if self.pause_between_steps:
+            self.pause()
         return json.loads(returned_data)
 
     def close(self):
-        self.unpause()
+        if self.pause_between_steps:
+            self.unpause()
         if self.connected:
             res = requests.post(
                 f"{self.server}/stop", headers=self._auth_headers
