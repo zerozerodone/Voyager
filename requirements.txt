@@ -1,5 +1,6 @@
 tqdm
 langchain
+langchain-core
 javascript
 setuptools
 openai
