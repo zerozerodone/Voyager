@@ -752,17 +752,21 @@ class PlayerAgent:
         bot_username: str = "bot",
         thinking: bool = True,
     ):
+        extra_kwargs: dict[str, Any] = {}
+        if not thinking:
+            extra_kwargs["model_kwargs"] = {"options": {"think": False}}
+
         self.llm = ChatOpenAI(
             model=model_name,
             temperature=temperature,
             request_timeout=request_timeout,
+            **extra_kwargs,
         )
         self.memory: list[dict] = []
         self.max_memory = max_memory
         self.enable_vision = enable_vision
         self._vision_ok = enable_vision
         self.bot_username = bot_username
-        self.thinking = thinking
         self.pending_player_chats: list[str] = []
 
     # ── message building ─────────────────────────────────────────
@@ -803,9 +807,6 @@ class PlayerAgent:
             '{"thought": "...", "action": "...", "params": {...}}'
         )
         content = "\n\n".join(parts)
-
-        if not self.thinking:
-            content = "/nothink\n" + content
 
         if screenshot and self._vision_ok:
             kb = len(screenshot) * 3 // 4 // 1024

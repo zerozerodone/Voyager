@@ -6,6 +6,7 @@ main.py
 pyproject.toml
 uv.lock
 voyager_local.py
+*.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
