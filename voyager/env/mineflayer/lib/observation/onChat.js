@@ -8,7 +8,7 @@ class onChat extends Observation {
 
         bot.on("chatEvent", (username, message) => {
             if (message.startsWith("/")) return;
-            this.obs += `[${username}] ${message}\n`;
+            this.obs += `[${bot.username}] ${message}\n`;
             this.bot.event(this.name);
         });
 

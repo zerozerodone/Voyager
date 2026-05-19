@@ -59,7 +59,9 @@ app.post("/start", (req, res) => {
     bot = null;
     console.log(req.body);
     bot = mineflayer.createBot({
-        host: "localhost",
+        // Prefer IPv4 loopback: on some systems "localhost" resolves to ::1 while
+        // the game server only accepts IPv4, causing connection failures.
+        host: req.body.host || "127.0.0.1",
         port: req.body.port,
         username: req.body.username || "bot",
         disableChatSigning: true,

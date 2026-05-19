@@ -26,7 +26,7 @@ from voyager.control_primitives import load_control_primitives
 os.environ["OPENAI_API_BASE"] = "http://localhost:11434/v1"
 os.environ["OPENAI_API_KEY"] = "ollama"
 
-MODEL = "magistral:24b-small-2509"
+MODEL = "gemma4:26b-a4b-it-q4_K_M"
 MC_PORT = 25565
 THINKING = False
 

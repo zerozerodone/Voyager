@@ -55,6 +55,22 @@ def _find_node_binary():
     )
 
 
+def _http_error_detail(res: requests.Response) -> str:
+    """Extract JSON `error` or short body text for clearer RuntimeErrors."""
+    try:
+        data = res.json()
+        if isinstance(data, dict) and data.get("error"):
+            return f" — {data['error']}"
+    except Exception:
+        pass
+    text = (res.text or "").strip()
+    if text and len(text) < 800:
+        return f" — {text}"
+    if text:
+        return f" — {text[:400]}…"
+    return ""
+
+
 def validate_code(code: str) -> None:
     for pattern in _CODE_BLOCKLIST:
         if pattern in code:
@@ -67,6 +83,7 @@ class VoyagerEnv(gym.Env):
     def __init__(
         self,
         mc_port=None,
+        mc_host="127.0.0.1",
         azure_login=None,
         server_host="http://127.0.0.1",
         server_port=3000,
@@ -83,6 +100,7 @@ class VoyagerEnv(gym.Env):
                 "Both mc_port and mc_login are specified, mc_port will be ignored"
             )
         self.mc_port = mc_port
+        self.mc_host = mc_host
         self.azure_login = azure_login
         self.server = f"{server_host}:{server_port}"
         self.server_port = server_port
@@ -146,10 +164,10 @@ class VoyagerEnv(gym.Env):
             print("Mineflayer process has exited, restarting")
             self.mineflayer.run()
             if not self.mineflayer.is_running:
+                retry += 1
                 if retry > 3:
                     raise RuntimeError("Mineflayer process failed to start")
-                else:
-                    continue
+                continue
             print(self.mineflayer.ready_line)
             res = requests.post(
                 f"{self.server}/start",
@@ -159,8 +177,9 @@ class VoyagerEnv(gym.Env):
             )
             if res.status_code != 200:
                 self.mineflayer.stop()
+                detail = _http_error_detail(res)
                 raise RuntimeError(
-                    f"Minecraft server reply with code {res.status_code}"
+                    f"Minecraft server reply with code {res.status_code}{detail}"
                 )
             return res.json()
 
@@ -208,6 +227,7 @@ class VoyagerEnv(gym.Env):
             raise RuntimeError("inventory can only be set when options is hard")
 
         self.reset_options = {
+            "host": self.mc_host,
             "port": self.mc_port,
             "reset": options.get("mode", "hard"),
             "inventory": options.get("inventory", {}),
@@ -222,7 +242,8 @@ class VoyagerEnv(gym.Env):
         if self.pause_between_steps:
             self.unpause()
         self.mineflayer.stop()
-        time.sleep(1)  # wait for mineflayer to exit
+        # Let the game server tear down the previous bot TCP session before we reconnect.
+        time.sleep(2)
 
         returned_data = self.check_process()
         self.has_reset = True
@@ -237,10 +258,15 @@ class VoyagerEnv(gym.Env):
         if self.pause_between_steps:
             self.unpause()
         if self.connected:
-            res = requests.post(
-                f"{self.server}/stop", headers=self._auth_headers
-            )
-            if res.status_code == 200:
+            try:
+                res = requests.post(
+                    f"{self.server}/stop",
+                    headers=self._auth_headers,
+                    timeout=10,
+                )
+                if res.status_code == 200:
+                    self.connected = False
+            except requests.exceptions.RequestException:
                 self.connected = False
         if self.mc_instance:
             self.mc_instance.stop()

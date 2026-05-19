@@ -9,10 +9,10 @@ the only thing that changes is how actions are selected and dispatched.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from openai import OpenAI
 
 from voyager.prompts import load_prompt
 from voyager.utils.json_utils import fix_and_parse_json
@@ -752,15 +752,18 @@ class PlayerAgent:
         bot_username: str = "bot",
         thinking: bool = True,
     ):
-        extra_kwargs: dict[str, Any] = {}
-        if not thinking:
-            extra_kwargs["model_kwargs"] = {"options": {"think": False}}
-
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=temperature,
-            request_timeout=request_timeout,
-            **extra_kwargs,
+        self.model_name = model_name
+        self.temperature = temperature
+        self.request_timeout = request_timeout
+        import httpx
+        self.client = OpenAI(
+            base_url=os.environ.get("OPENAI_API_BASE", "http://localhost:11434/v1"),
+            api_key=os.environ.get("OPENAI_API_KEY", "ollama"),
+            timeout=httpx.Timeout(request_timeout, connect=10.0),
+            http_client=httpx.Client(
+                timeout=httpx.Timeout(request_timeout, connect=10.0),
+                trust_env=False,
+            ),
         )
         self.memory: list[dict] = []
         self.max_memory = max_memory
@@ -771,19 +774,21 @@ class PlayerAgent:
 
     # ── message building ─────────────────────────────────────────
 
-    def _system_message(self) -> SystemMessage:
+    def _build_instructions(self) -> str:
         base = load_prompt("player")
         action_docs = "\n\n## Available Actions\n\n"
         for name, info in ACTIONS.items():
             action_docs += f"**{name}** — {info['description']}\n"
             for pname, pdesc in info.get("params", {}).items():
                 action_docs += f"  - {pname}: {pdesc}\n"
-        return SystemMessage(content=base + action_docs)
+        return base + action_docs
 
-    def _human_message(
+    def _build_messages(
         self, observation: str, screenshot: str | None, player_chats: list[str],
-    ) -> HumanMessage:
+    ) -> list[dict]:
         parts: list[str] = []
+
+        parts.append("=== Instructions ===\n" + self._build_instructions())
 
         if self.memory:
             history = []
@@ -810,15 +815,17 @@ class PlayerAgent:
 
         if screenshot and self._vision_ok:
             kb = len(screenshot) * 3 // 4 // 1024
-            print(f"\033[36m[Vision] Player: screenshot ({kb} KB)\033[0m")
-            return HumanMessage(content=[
+            print(f"\033[36m[Vision] Player: screenshot attached ({kb} KB)\033[0m")
+            return [{"role": "user", "content": [
                 {"type": "text", "text": content},
                 {
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{screenshot}"},
                 },
-            ])
-        return HumanMessage(content=content)
+            ]}]
+        if self.enable_vision:
+            print(f"\033[36m[Vision] Player: no screenshot available\033[0m")
+        return [{"role": "user", "content": content}]
 
     # ── core loop entry points ───────────────────────────────────
 
@@ -835,16 +842,16 @@ class PlayerAgent:
 
         screenshot = self._extract_screenshot(events) if self.enable_vision else None
 
-        messages = [
-            self._system_message(),
-            self._human_message(observation, screenshot, all_player_chats),
-        ]
+        messages = self._build_messages(observation, screenshot, all_player_chats)
 
         try:
-            response = self._invoke(messages)
-            parsed = fix_and_parse_json(response.content)
+            choice = self._invoke(messages)
+            content = self._extract_content(choice)
+            if not content.strip():
+                raise ValueError("LLM returned empty response")
+            parsed = fix_and_parse_json(content)
         except Exception as e:
-            print(f"\033[31m[Player] Parse error: {e}\033[0m")
+            print(f"\033[31m[Player] LLM error: {e}\033[0m")
             parsed = {"thought": "Error, observing", "action": "wait", "params": {"seconds": 3}}
 
         thought = parsed.get("thought", "")
@@ -894,24 +901,81 @@ class PlayerAgent:
                 return event
         return None
 
-    def _invoke(self, messages):
+    @staticmethod
+    def _clean_json(text: str) -> str:
+        """Strip markdown code fences and leading prose from LLM output."""
+        import re
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if m:
+            return m.group(1)
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            return m.group(0)
+        return text
+
+    @staticmethod
+    def _extract_content(choice) -> str:
+        """Get usable text from an OpenAI chat completion choice.
+
+        Ollama + Gemma4 puts all output in the reasoning field and
+        leaves content empty via the OpenAI-compatible endpoint.
+        """
+        msg = choice.message
+        if msg.content:
+            return PlayerAgent._clean_json(msg.content)
+        reasoning = (
+            getattr(msg, "reasoning", None)
+            or getattr(msg, "reasoning_content", None)
+        )
+        if reasoning:
+            print("\033[33m[LLM] Content empty, extracting from reasoning.\033[0m")
+            return PlayerAgent._clean_json(reasoning)
+        return ""
+
+    @staticmethod
+    def _strip_images(messages: list[dict]) -> list[dict]:
+        stripped = []
+        for msg in messages:
+            if isinstance(msg.get("content"), list):
+                text = "\n".join(
+                    p["text"] for p in msg["content"] if p.get("type") == "text"
+                )
+                stripped.append({**msg, "content": text})
+            else:
+                stripped.append(msg)
+        return stripped
+
+    @staticmethod
+    def _has_images(messages: list[dict]) -> bool:
+        for msg in messages:
+            if isinstance(msg.get("content"), list):
+                if any(p.get("type") == "image_url" for p in msg["content"]):
+                    return True
+        return False
+
+    def _call_llm(self, messages: list[dict]):
+        resp = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=self.temperature,
+            max_tokens=1024,
+        )
+        return resp.choices[0]
+
+    def _invoke(self, messages: list[dict]):
         try:
-            return self.llm.invoke(messages)
+            choice = self._call_llm(messages)
+            if not self._extract_content(choice) and self._has_images(messages):
+                print("\033[33m[Vision] Empty response with image, retrying without screenshot.\033[0m")
+                self._vision_ok = False
+                choice = self._call_llm(self._strip_images(messages))
+            return choice
         except Exception as e:
             err = str(e).lower()
-            if self._vision_ok and any(
-                kw in err for kw in ("image", "vision", "multimodal", "content_type")
+            if self._has_images(messages) and any(
+                kw in err for kw in ("image", "vision", "multimodal", "content_type", "400")
             ):
                 print("\033[33m[Vision] Not supported by model, disabling.\033[0m")
                 self._vision_ok = False
-                stripped = []
-                for msg in messages:
-                    if isinstance(msg.content, list):
-                        text = "\n".join(
-                            p["text"] for p in msg.content if p.get("type") == "text"
-                        )
-                        stripped.append(msg.__class__(content=text))
-                    else:
-                        stripped.append(msg)
-                return self.llm.invoke(stripped)
+                return self._call_llm(self._strip_images(messages))
             raise
