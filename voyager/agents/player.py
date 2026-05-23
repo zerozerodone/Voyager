@@ -709,7 +709,10 @@ def parse_events(
     entities = s.get("entities", {})
     pos = s["position"]
 
+    game_mode = s.get("gameMode", "survival")
+
     lines = [
+        f"Game mode: {game_mode}",
         f"Biome: {s['biome']}",
         f"Time: {s['timeOfDay']}",
         f"Health: {s['health']:.0f}/20",
@@ -784,7 +787,7 @@ class PlayerAgent:
         return base + action_docs
 
     def _build_messages(
-        self, observation: str, screenshot: str | None, player_chats: list[str],
+        self, observation: str, screenshot, player_chats: list[str],
     ) -> list[dict]:
         parts: list[str] = []
 
@@ -813,19 +816,31 @@ class PlayerAgent:
         )
         content = "\n\n".join(parts)
 
-        if screenshot and self._vision_ok:
-            kb = len(screenshot) * 3 // 4 // 1024
-            print(f"\033[36m[Vision] Player: screenshot attached ({kb} KB)\033[0m")
-            return [{"role": "user", "content": [
-                {"type": "text", "text": content},
-                {
+        images = self._collect_images(screenshot)
+        if images and self._vision_ok:
+            total_kb = sum(len(b64) * 3 // 4 // 1024 for b64 in images.values())
+            labels = ", ".join(f"{k}={len(v) * 3 // 4 // 1024}KB" for k, v in images.items())
+            print(f"\033[36m[Vision] Player: {len(images)} image(s) attached ({labels})\033[0m")
+            blocks = [{"type": "text", "text": content}]
+            for label, b64 in images.items():
+                blocks.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{screenshot}"},
-                },
-            ]}]
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                })
+            return [{"role": "user", "content": blocks}]
         if self.enable_vision:
             print(f"\033[36m[Vision] Player: no screenshot available\033[0m")
         return [{"role": "user", "content": content}]
+
+    @staticmethod
+    def _collect_images(screenshot) -> dict[str, str] | None:
+        if not screenshot:
+            return None
+        if isinstance(screenshot, dict):
+            return {k: v for k, v in screenshot.items() if v}
+        if isinstance(screenshot, str) and len(screenshot) > 0:
+            return {"view": screenshot}
+        return None
 
     # ── core loop entry points ───────────────────────────────────
 
@@ -973,7 +988,7 @@ class PlayerAgent:
         except Exception as e:
             err = str(e).lower()
             if self._has_images(messages) and any(
-                kw in err for kw in ("image", "vision", "multimodal", "content_type", "400")
+                kw in err for kw in ("image", "vision", "multimodal", "content_type")
             ):
                 print("\033[33m[Vision] Not supported by model, disabling.\033[0m")
                 self._vision_ok = False

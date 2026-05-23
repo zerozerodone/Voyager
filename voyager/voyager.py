@@ -21,6 +21,8 @@ class Voyager:
     def _extract_screenshot(events):
         for event_type, event in events:
             if event_type == "screenshot":
+                if isinstance(event, dict):
+                    return event.get("fpv") or event.get("map")
                 return event
         return None
 
