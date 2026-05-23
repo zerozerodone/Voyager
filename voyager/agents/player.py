@@ -684,6 +684,7 @@ def parse_events(
     player_chats: list[str] = []
     bot_chats: list[str] = []
     errors: list[str] = []
+    seen_chats: set[str] = set()
     for event_type, event in events:
         if event_type == "observe":
             observe = event
@@ -691,8 +692,9 @@ def parse_events(
             raw = event.get("onChat", "")
             for line in raw.split("\n"):
                 line = line.strip()
-                if not line:
+                if not line or line in seen_chats:
                     continue
+                seen_chats.add(line)
                 if line.startswith(f"[{bot_username}]"):
                     bot_chats.append(line)
                 else:
