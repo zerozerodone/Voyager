@@ -798,7 +798,10 @@ class PlayerAgent:
         if self.memory:
             history = []
             for i, t in enumerate(self.memory[-self.max_memory:], 1):
-                entry = f"[Turn {i}] {t['action']}({json.dumps(t['params'], separators=(',', ':'))})"
+                entry = f"[Turn {i}]"
+                if t.get("player_chats"):
+                    entry += f" Player said: {'; '.join(t['player_chats'])} →"
+                entry += f" {t['action']}({json.dumps(t['params'], separators=(',', ':'))})"
                 if t.get("result"):
                     entry += f" → {t['result'][:120]}"
                 history.append(entry)
@@ -851,7 +854,12 @@ class PlayerAgent:
         observation, player_chats, bot_chats, _ = parse_events(
             events, bot_username=self.bot_username,
         )
-        all_player_chats = self.pending_player_chats + player_chats
+        seen = set()
+        all_player_chats = []
+        for msg in self.pending_player_chats + player_chats:
+            if msg not in seen:
+                seen.add(msg)
+                all_player_chats.append(msg)
         self.pending_player_chats = []
 
         if all_player_chats:

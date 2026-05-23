@@ -20,7 +20,7 @@ os.environ["OPENAI_API_BASE"] = "http://localhost:11434/v1"
 os.environ["OPENAI_API_KEY"] = "ollama"
 
 from voyager.env import VoyagerEnv
-from voyager.agents.player import PlayerAgent
+from voyager.agents.player import PlayerAgent, parse_events
 from voyager.control_primitives import load_control_primitives
 
 MC_PORT = 25565
@@ -102,6 +102,25 @@ elif isinstance(screenshot_data, str) and len(screenshot_data) > 100:
 else:
     check("Screenshot data valid", False, f"type={type(screenshot_data)}")
 
+# ── 3b. Verify gameMode in observations ──────────────────────────
+
+print("\n[3b/5] Checking gameMode in observations...")
+obs_text, _, _, _ = parse_events(events, bot_username=BOT_USERNAME)
+check("gameMode in observation", "Game mode:" in obs_text,
+      next((l for l in obs_text.splitlines() if "Game mode:" in l), "not found"))
+
+# ── 3c. Verify chat deduplication ────────────────────────────────
+
+print("\n[3c/5] Checking chat dedup logic...")
+fake_events = [
+    ("onChat", {"onChat": "[TestPlayer] hello"}),
+    ("onChat", {"onChat": "[TestPlayer] hello"}),
+    ("onChat", {"onChat": "[TestPlayer] different msg"}),
+]
+_, player_chats, _, _ = parse_events(fake_events, bot_username=BOT_USERNAME)
+check("Chat dedup removes duplicates", len(player_chats) == 2,
+      f"got {len(player_chats)}: {player_chats}")
+
 # ── 4. Feed through PlayerAgent ────────────────────────────────────
 
 print("\n[4/5] Running PlayerAgent.decide() with live screenshot...")
@@ -131,6 +150,17 @@ try:
     agent.record_result(result_events)
     last_result = agent.memory[-1]["result"] if agent.memory else "no memory"
     check("Action executed", True, last_result)
+
+    # Verify pending_player_chats dedup: record_result queues chats,
+    # but decide() on the same events should not duplicate them.
+    pending_before = list(agent.pending_player_chats)
+    # Simulate: decide with the same result_events (as the game loop does)
+    _ = agent.decide(result_events)
+    merged_count = len(agent.memory[-1].get("player_chats", []))
+    # pending_player_chats from record_result + player_chats from decide
+    # should be deduped — no line should appear twice
+    check("Pending chat dedup in decide()", merged_count == len(set(agent.memory[-1].get("player_chats", []))),
+          f"merged {merged_count} chats, no duplicates")
 except Exception as e:
     check("Action executed", False, str(e))
 
